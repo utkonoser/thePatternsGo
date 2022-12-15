@@ -99,7 +99,7 @@ func TestGetInstance(t *testing.T) {
 
 <details><summary> Builder</summary>
 
-### Builder — повторное использование алгоритма для создания множества реализаций интерфейса.
+### Builder — повторное использование алгоритма для создания множества реализаций интерфейса
 
 ### Описание
 
@@ -569,7 +569,7 @@ func TestCarFactory(t *testing.T) {
 
 <details><summary> Prototype</summary>
 
-### Prototype — избегание создания повторяющихся объектов.
+### Prototype — избегание создания повторяющихся объектов
 
 ### Описание
 
@@ -726,15 +726,451 @@ func TestClone(t *testing.T) {
 ********************************************
 #### Структурные (Structural)
 <details><summary> Composite</summary>
-в процессе ...
+
+### Composite — альтернатива наследования
+
+### Описание
+
+Шаблон проектирования Composite предпочитает композицию наследованию. Подход «композиция вместо наследования» был предметом дискуссий среди инженеров с девяностых годов. В общем, в Go нет наследования, потому что оно ему не нужно! В шаблоне проектирования Composite вы будете создавать иерархии и деревья объектов. Объекты имеют разные объекты со своими полями и методами внутри них. Этот подход очень мощный и решает многие проблемы наследования и множественного наследования.
+
+Цель паттерна Composite состоит в том, чтобы избежать иерархического ада, когда сложность приложения может слишком сильно возрасти и это повлияет на ясность кода.
+
+### Пример — пловец и акула
+
+Типичная проблема наследования возникает, когда у вас есть объект, наследуемый от двух совершенно разных классов, между которыми нет абсолютно никакой связи. Представьте спортсмена, который тренируется и является пловцом с умением плавать:
+* Athlete имеет метод Train().
+* Swimmer имеет метод Swim().
+
+Swimmer наследуется от Athlete, поэтому он наследует его метод Train и объявляет собственный метод Swim. У вас также может быть велосипедист, который также является спортсменом и объявляет метод Ride.
+А теперь представьте себе Animal, например Shark, которая плавает, как и Swimmer. Ничего фантастического. Итак, как решить эту проблему? Акула не может быть пловцом, который еще и тренируется. Акулы не тренируются (насколько я знаю!).
+
+Требования и критерии приемлемости:
+* У нас должна быть структура Athlete с методом Train
+* У нас должен быть Swimmer с методом Swim
+* У нас должна быть структура Animal с методом Eat
+* У нас должна быть структура Shark с методом Swim, который используется совместно со Swimmer
+
+В Go мы можем использовать два типа композиции — прямую композицию и встраиваемую композицию. Сначала мы решим эту проблему, используя прямую композицию, которая имеет все необходимое в виде полей внутри структуры.
+
+
+### Реализация с помощью нулевой инициализации
+```go
+package composite
+
+import "fmt"
+
+// Athlete
+
+type Athlete struct {}
+
+func (a *Athlete) Train() {
+	fmt.Println("Training...")
+}
+
+type CompositeSwimmerA struct {
+	MyAthlete Athlete
+	MySwim    func()
+}
+
+// Animal
+
+type Animal struct {}
+
+func (a *Animal) Eat() {
+	fmt.Println("Eating...")
+}
+
+type Shark struct {
+	Animal
+	Swim func()
+}
+
+// Method for athlete and fish
+
+func Swim() {
+	fmt.Println("Swimming...")
+```
+### Реализация с помощью интерфейсов
+```go
+type Swimmer interface {
+	Swim()
+}
+
+type Trainer interface {
+	Train()
+}
+
+type SwimmerImpl struct{}
+
+func (s *SwimmerImpl) Swim() {
+	fmt.Println("Swimming...")
+}
+
+type CompositeSwimmerB struct {
+	Trainer
+	Swimmer
+}
+```
+### Тесты
+```go
+package composite
+
+import (
+	"testing"
+)
+
+func TestAthleteA(t *testing.T) {
+	swimmer := CompositeSwimmerA{
+		MySwim: Swim,
+	}
+
+	swimmer.MyAthlete.Train()
+	swimmer.MySwim()
+}
+
+func TestAnimal(t *testing.T) {
+	fish := Shark{
+		Swim: Swim,
+	}
+	fish.Eat()
+	fish.Swim()
+}
+
+func TestAthleteB(t *testing.T) {
+	swimmer := CompositeSwimmerB{
+		Trainer: &Athlete{},
+		Swimmer: &SwimmerImpl{},
+	}
+
+	swimmer.Train()
+	swimmer.Swim()
+}
+
+```
+### Binary Tree compositions
+
+Другой очень распространенный подход к шаблону Composite — это работа со структурами двоичного дерева. В двоичном дереве вам нужно хранить экземпляры самого себя в поле:
+```go
+type Tree struct {
+	LeafValue int
+	Right     *Tree
+	Left      *Tree
+}
+```
+Это своего рода рекурсивная композиция, и из-за природы рекурсивности мы должны использовать указатели, чтобы компилятор знал, сколько памяти он должен зарезервировать для этой структуры. В нашей структуре Tree хранится объект LeafValue для каждого экземпляра и новое дерево в его полях Right и Left.
+С помощью этой структуры мы могли бы создать объект и написать тест:
+```go
+func TestBinaryTree(t *testing.T) {
+	root := Tree{
+		LeafValue: 0,
+		Left: &Tree{
+			LeafValue: 5,
+			Right:     &Tree{6, nil, nil},
+			Left:      nil,
+		},
+		Right: &Tree{4, nil, nil},
+	}
+	right := root.Left.Right.LeafValue
+	if right != 6 {
+		t.Errorf("wrong result, must be 6, not %v", right)
+	}
+}
+```
 </details>
 
 <details><summary> Adapter</summary>
-в процессе ...
+
+### Adapter — помощь в поддержке open/closed принципа в приложении
+
+### Описание
+Adapter очень полезен, когда, например, интерфейс устаревает и его
+невозможно заменить легко или быстро. Вместо этого вы создаете новый интерфейс для удовлетворения текущих потребностей вашего приложения, которое под капотом использует реализации старого интерфейса.
+Адаптер также помогает нам поддерживать принцип open/closed в наших приложениях, делая их более предсказуемыми.
+Принцип open/closed впервые был сформулирован Бертраном Мейером в его книге «Object-Oriented Software Construction». Он заявил, что код должен быть открыт для новых функций, но закрыт для модификаций. Это подразумевает несколько вещей. С одной стороны, мы должны стараться писать расширяемый код, а не только работающий. В то же время мы должны стараться не модифицировать исходный код (ваш или чужой) насколько это возможно, потому что мы не всегда осознаем последствия этой модификации.
+
+Шаблон проектирования Adapter помогает удовлетворить потребности двух частей кода, которые поначалу несовместимы. Это ключевой момент, который следует учитывать при принятии решения о том, подходит ли Adapter для решения вашей задачи.
+
+### Пример — старый и новый Printer
+
+В примере у нас будет старый интерфейс Printer и новый. Пользователи нового интерфейса хотят, чтобы им был доступен и старый интерфейс с дополнительной пометкой. Нам нужен Adapter, чтобы пользователи могли при необходимости использовать старые реализации (например, для работы с каким-то устаревшим кодом)
+
+Требования и критерии приемлемости:
+* Нужно создать Adapter, реализующий интерфейс ModernPrinter
+* Новый объект Adapter должен содержать экземпляр интерфейса LegacyPrinter
+* При использовании ModernPrinter он должен вызывать интерфейс LegacyPrinter под капотом, добавляя к нему текстовый префикс Adapter
+
+### Реализация
+```go
+package adapter
+
+import "fmt"
+
+// legacy printer
+
+type LegacyPrinter interface {
+	Print(s string) string
+}
+type MyLegacyPrinter struct{}
+
+func (l *MyLegacyPrinter) Print(s string) (newMsg string) {
+	newMsg = fmt.Sprintf("Legacy Printer: %s", s)
+	println(newMsg)
+	return
+}
+
+// modern printer
+
+type ModernPrinter interface {
+	PrintStored() string
+}
+
+// printer adapter
+
+type PrinterAdapter struct {
+	OldPrinter LegacyPrinter
+	Msg        string
+}
+
+func (p *PrinterAdapter) PrintStored() (newMsg string) {
+	if p.OldPrinter != nil {
+		newMsg = fmt.Sprintf("Adapter: %s", p.Msg)
+		newMsg = p.OldPrinter.Print(newMsg)
+	} else {
+		newMsg = p.Msg
+	}
+	return
+}
+```
+
+### Тесты
+```go
+package adapter
+
+import "testing"
+
+func TestAdapter(t *testing.T) {
+	msg := "Hello World!"
+
+	adapter := PrinterAdapter{OldPrinter: &MyLegacyPrinter{}, Msg: msg}
+	returnedMsg := adapter.PrintStored()
+
+	if returnedMsg != "Legacy Printer: Adapter: Hello World!" {
+		t.Errorf("message didn't match: %s\n", returnedMsg)
+	}
+
+	adapter = PrinterAdapter{OldPrinter: nil, Msg: msg}
+	returnedMsg = adapter.PrintStored()
+	if returnedMsg != "Hello World!" {
+		t.Errorf("message didn't match: %s\n", returnedMsg)
+	}
+}
+
+```
 </details>
 
 <details><summary> Bridge</summary>
-в процессе ...
+
+### Bridge — отделение абстракции от реализации
+
+### Описание
+
+Паттерн Bridge — это паттерн с немного загадочным определением из оригинальной книги «Gang of Four». Он отделяет абстракцию от ее реализации, так что они могут меняться независимо друг от друга. Это загадочное объяснение просто означает, что вы можете отделить даже самую базовую форму функциональности: отделить объект от того, что он делает.
+
+Целью шаблона Bridge является придание гибкости структуре, которая часто изменяется. Знание входных и выходных данных метода позволяет нам изменять код, не зная о нем слишком много, и оставляя обеим сторонам свободу для более легкого изменения.
+
+### Пример — два Printer и два метода Print для каждого
+Для нашего примера мы перейдем к абстракции консольного принтера, чтобы упростить его. У нас будет две реализации. Первый будет писать в консоль. Вторую запись мы сделаем в интерфейс io.Writer, чтобы обеспечить большую гибкость решения. У нас также будет два абстрактных объекта-пользователя реализаций — Normal, который будет использовать каждую реализацию прямым образом, и реализация Packt, которая добавит предложение `Message from Packt:` к распечатываемому сообщению.
+В конце у нас будет два объекта абстракции, которые имеют две разные реализации их функциональности. Итак, фактически у нас будет 4 возможных комбинации функциональности объектов.
+
+Требования и критерии приемлемости:
+* PrinterAPI, который принимает сообщение для печати
+* Реализация API, которая просто выводит сообщение на консоль
+* Реализация API, которая печатает в интерфейсе io.Writer
+* Абстракция Printer с методом Print для реализации в типах печати
+* Normal Printer, который реализует Printer и PrinterAPI интерфейс
+* Normal Printer перенаправит сообщение непосредственно в реализацию
+* Принтер Packt, который реализует абстракцию Printer и интерфейс PrinterAPI
+* Принтер Packt добавит сообщение `Message from Packt:` ко всем распечаткам
+
+### Реализация
+```go
+package bridge
+
+import (
+	"errors"
+	"fmt"
+	"io"
+)
+
+type PrinterAPI interface {
+	PrintMessage(string) error
+}
+
+type PrinterImpl1 struct{}
+
+func (d *PrinterImpl1) PrintMessage(msg string) error {
+	fmt.Printf("%s\n", msg)
+	return nil
+}
+
+type PrinterImpl2 struct {
+	Writer io.Writer
+}
+
+func (d *PrinterImpl2) PrintMessage(msg string) error {
+	if d.Writer == nil {
+		return errors.New("you need to pass an io.Writer to PrinterImpl2")
+	}
+	fmt.Fprintf(d.Writer, "%s", msg)
+	return nil
+}
+
+type PrinterAbstraction interface {
+	Print() error
+}
+
+type NormalPrinter struct {
+	Msg     string
+	Printer PrinterAPI
+}
+
+func (c *NormalPrinter) Print() error {
+	c.Printer.PrintMessage(c.Msg)
+	return nil
+}
+
+type PacktPrinter struct {
+	Msg     string
+	Printer PrinterAPI
+}
+
+func (c *PacktPrinter) Print() error {
+	c.Printer.PrintMessage(fmt.Sprintf("Message from Packt: %s", c.Msg))
+	return nil
+}
+```
+
+### Тесты
+```go
+package bridge
+
+import (
+	"errors"
+	"strings"
+	"testing"
+)
+
+func TestPrintAPI(t *testing.T) {
+	api1 := PrinterImpl1{}
+
+	err := api1.PrintMessage("Hello")
+	if err != nil {
+		t.Errorf("error trying to use the API!"+
+			" implementation: Message: %s\n", err.Error())
+	}
+}
+
+type TestWriter struct {
+	Msg string
+}
+
+func (t *TestWriter) Write(p []byte) (n int, err error) {
+	n = len(p)
+	if n > 0 {
+		t.Msg = string(p)
+		return n, nil
+	}
+	err = errors.New("content received on Writer was empty")
+	return
+}
+
+func TestPrintApi2(t *testing.T) {
+	api2 := PrinterImpl2{}
+
+	err := api2.PrintMessage("Hello")
+	if err != nil {
+		expectedErrorMsg := "you need to pass an io.Writer to PrinterImpl2"
+		if !strings.Contains(err.Error(), expectedErrorMsg) {
+			t.Errorf("Error message was not correct.\n Actual:"+
+				" %s \nExpected: %s\n", err.Error(), expectedErrorMsg)
+		}
+	}
+
+	testWriter := TestWriter{}
+	api2 = PrinterImpl2{Writer: &testWriter}
+
+	expectedMsg := "Hello"
+	err = api2.PrintMessage(expectedMsg)
+	if err != nil {
+		t.Errorf("error trying to use the API2"+
+			"  implementation: %s\n", err.Error())
+	}
+
+	if testWriter.Msg != expectedMsg {
+		t.Fatalf("API2 did not write corretly on the io.Writer."+
+			" \nActual: %s \nExpected: %s\n", testWriter.Msg, expectedMsg)
+	}
+}
+
+func TestNormalPrinter_Print(t *testing.T) {
+	expectedMsg := "Hello io.Writer"
+
+	normal := NormalPrinter{
+		Msg:     expectedMsg,
+		Printer: &PrinterImpl1{},
+	}
+
+	err := normal.Print()
+	if err != nil {
+		t.Errorf(err.Error())
+	}
+
+	testWriter := TestWriter{}
+	normal = NormalPrinter{
+		Msg: expectedMsg,
+		Printer: &PrinterImpl2{
+			Writer: &testWriter,
+		},
+	}
+	err = normal.Print()
+	if err != nil {
+		t.Error(err.Error())
+	}
+
+	if testWriter.Msg != expectedMsg {
+		t.Errorf("the expected message on the io.Writer doesn't match actual."+
+			"\nActual: %s\nExpected: %s\n", testWriter.Msg, expectedMsg)
+	}
+}
+
+func TestPacktPrinter_Print(t *testing.T) {
+	passedMessage := "Hello io.Writer"
+	expectedMessage := "Message from Packt: Hello io.Writer"
+	packt := PacktPrinter{
+		Msg:     passedMessage,
+		Printer: &PrinterImpl1{},
+	}
+	err := packt.Print()
+	if err != nil {
+		t.Errorf(err.Error())
+	}
+	testWriter := TestWriter{}
+	packt = PacktPrinter{
+		Msg: passedMessage,
+		Printer: &PrinterImpl2{
+			Writer: &testWriter,
+		},
+	}
+	err = packt.Print()
+	if err != nil {
+		t.Error(err.Error())
+	}
+	if testWriter.Msg != expectedMessage {
+		t.Errorf("The expected message on the io.Writer doesn't match actual.\n"+
+			"Actual: %s\nExpected: %s\n", testWriter.Msg, expectedMessage)
+	}
+}
+```
 </details>
 
 <details><summary> Proxy</summary>
