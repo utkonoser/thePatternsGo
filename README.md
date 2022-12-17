@@ -1174,7 +1174,340 @@ func TestPacktPrinter_Print(t *testing.T) {
 </details>
 
 <details><summary> Proxy</summary>
-в процессе ...
+
+### Proxy — оборачивание объекта для сокрытия характеристик
+
+### Описание
+
+Шаблон Proxy обычно оборачивает объект, чтобы скрыть некоторые его характеристики. Эти характеристики могут заключаться в том, что это удаленный объект (remote proxy), очень тяжелый объект, такой как дамп терабайтной базы данных (virtual proxy), или объект с ограниченным доступом (protection proxy).
+
+Возможностей паттерна Proxy много, но в целом все они пытаются обеспечить одни и те же следующие функции:
+* Скрыть объект за прокси-сервером для того, чтобы возможные функции можно было скрыть или ограничить
+* Обеспечить новый уровень абстракции, с которым легко работать и можно легко изменить
+
+### Пример
+
+В примере мы собираемся создать удаленный прокси, который будет кэшировать объекты перед доступом к базе данных. Давайте представим, что у нас есть база данных со многими пользователями, но вместо того, чтобы обращаться к базе данных каждый раз, когда нам нужна информация о пользователе, у нас будет стек пользователей в порядке поступления (FIFO) в шаблоне Proxy.
+
+Требования и критерии приемлемости:
+* Весь доступ к базе данных пользователей будет осуществляться через тип Proxy
+* Стек из n последних пользователей будет храниться в Proxy
+* Если пользователь уже существует в стеке, запроса в базу данных не будет, вернется кешируемое значение
+* Если запрошенный пользователь не существует в стеке, будет сделан запрос в базу данных, если стек полон, то удалим самого старого пользователя в стеке, далее сохраним нового пользователя и вернем его
+
+### Реализация
+```go
+package proxy
+
+import (
+	"fmt"
+)
+
+type UserFinder interface {
+	FindUser(id int32) (User, error)
+}
+
+type User struct {
+	ID int32
+}
+
+type UserList []User
+
+func (t *UserList) FindUser(id int32) (User, error) {
+	for i := 0; i < len(*t); i++ {
+		if (*t)[i].ID == id {
+			return (*t)[i], nil
+		}
+	}
+	return User{}, fmt.Errorf("user %d could not be found\n", id)
+}
+
+type UserListProxy struct {
+	SomeDatabase           UserList
+	StackCache             UserList
+	StackCapacity          int
+	DidLastSearchUsedCache bool
+}
+
+func (u *UserListProxy) FindUser(id int32) (User, error) {
+	user, err := u.StackCache.FindUser(id)
+	if err == nil {
+		fmt.Println("Returning user from cache")
+		u.DidLastSearchUsedCache = true
+		return user, nil
+	}
+	user, err = u.SomeDatabase.FindUser(id)
+	if err != nil {
+		return User{}, err
+	}
+
+	u.addUserToStack(user)
+	fmt.Println("returning user from database")
+	u.DidLastSearchUsedCache = false
+	return user, nil
+}
+
+func (u *UserListProxy) addUserToStack(user User) {
+	if len(u.StackCache) >= u.StackCapacity {
+		u.StackCache = append(u.StackCache[1:], user)
+	} else {
+		u.StackCache.addUser(user)
+	}
+}
+
+func (t *UserList) addUser(newUser User) {
+	*t = append(*t, newUser)
+}
+
+```
+
+### Тесты
+
+```go
+package proxy
+
+import (
+	"math/rand"
+	"testing"
+)
+
+func TestUserListProxy(t *testing.T) {
+	someDatabase := UserList{}
+
+	rand.Seed(2342342)
+	for i := 0; i < 1000000; i++ {
+		n := rand.Int31()
+		someDatabase = append(someDatabase, User{ID: n})
+	}
+
+	proxy := UserListProxy{
+		SomeDatabase:  someDatabase,
+		StackCache:    UserList{},
+		StackCapacity: 2,
+	}
+
+	knownIDs := [3]int32{someDatabase[3].ID, someDatabase[4].ID, someDatabase[5].ID}
+
+	t.Run("FindUser - Empty cache", func(t *testing.T) {
+		user, err := proxy.FindUser(knownIDs[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if user.ID != knownIDs[0] {
+			t.Error("returned user name doesn't match with expected")
+		}
+		if len(proxy.StackCache) != 1 {
+			t.Error("after one successful search empty cache, the size of it must be one")
+		}
+		if proxy.DidLastSearchUsedCache {
+			t.Error("no user can be returned from empty cache")
+		}
+	})
+
+	t.Run("FindUser - one user, ask fo the same user", func(t *testing.T) {
+		user, err := proxy.FindUser(knownIDs[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if user.ID != knownIDs[0] {
+			t.Error("returned user name doesn't match with expected")
+		}
+		if len(proxy.StackCache) != 1 {
+			t.Error("cache must not grow if we asked for an object that is stored on it")
+		}
+		if !proxy.DidLastSearchUsedCache {
+			t.Error("the user should have been returned from the cache")
+		}
+	})
+
+	user1, err := proxy.FindUser(knownIDs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	user2, _ := proxy.FindUser(knownIDs[1])
+	if proxy.DidLastSearchUsedCache {
+		t.Error("the user wasn't stored on the proxy cache yet")
+	}
+
+	user3, _ := proxy.FindUser(knownIDs[2])
+	if proxy.DidLastSearchUsedCache {
+		t.Error("the user wasn't stored on the proxy cache yet")
+	}
+
+	for i := 0; i < len(proxy.StackCache); i++ {
+		if proxy.StackCache[i].ID == user1.ID {
+			t.Error("user that should be gone was found")
+		}
+	}
+
+	if len(proxy.StackCache) != 2 {
+		t.Error("after inserting 3 users the cache should not grow more than to two")
+	}
+
+	for _, v := range proxy.StackCache {
+		if v != user2 && v != user3 {
+			t.Error("a non expected user was found on the cache")
+		}
+	}
+
+}
+
+```
+</details>
+
+<details><summary> Decorator</summary>
+
+### Decorator — старший брат паттерна Proxy
+
+### Описание
+
+Шаблон проектирования Decorator позволяет декорировать уже существующий тип дополнительными функциональными возможностями, фактически не касаясь его. Как это возможно? Здесь используется подход, похожий на матрешку, когда у вас есть маленькая кукла, которую вы можете поместить в куклу такой же формы, но большего размера, и так далее.
+Decorator реализует тот же интерфейс, что и декорируемый им тип, и хранит экземпляр этого типа в своих полях данных. Таким образом, можно складывать столько декораторов, сколько угодно, просто сохраняя старый декоратор в поле нового.
+
+
+Итак, когда именно можно использовать паттерн Decorator:
+* Когда нужно добавить функциональность к некоторому коду, к которому у вас нет доступа, или вы не хотите изменять его, чтобы избежать негативного воздействия на код, и следовать принципу открытия/закрытия (например, устаревший код)
+* Когда вы хотите, чтобы функциональность объекта создавалась или изменялась динамически, а количество функций неизвестно и может быстро расти
+
+### Пример — пицца
+В примере мы приготовим абстрактную пиццу, где будет пара ингредиентов для нашей пиццы – лук и мясо.
+
+Критерии приемлемости шаблона Decorator — наличие общего интерфейса и основного типа, на основе которого будут строиться все слои:
+* У нас должен быть основной интерфейс, который будут реализовывать все декораторы. Этот интерфейс будет называться `IngredientAdd`, и он будет иметь строковый метод `AddIngredient()`
+* У нас должен быть основной тип `PizzaDecorator` (декоратор), к которому мы будем добавлять ингредиенты
+* У нас должен быть ингредиент `Onion`, реализующий тот же интерфейс `IngredientAdd`, который добавит лук к возвращаемой пицце
+* У нас должен быть ингредиент `Meat`, реализующий интерфейс `IngredientAdd`, который добавит мясо к возвращаемой пицце
+* При вызове метода `AddIngredient` для верхнего объекта он должен возвращать полностью оформленную пиццу с текстом `Pizza with the following ingredients:  meat, onion`
+
+### Реализация
+```go
+package decorator
+
+import (
+	"errors"
+	"fmt"
+)
+
+type IngredientAdd interface {
+	AddIngredient() (string, error)
+}
+
+type PizzaDecorator struct {
+	Ingredient IngredientAdd
+}
+
+func (p *PizzaDecorator) AddIngredient() (string, error) {
+	return "Pizza with the following ingredients:", nil
+}
+
+type Meat struct {
+	Ingredient IngredientAdd
+}
+
+func (m *Meat) AddIngredient() (string, error) {
+	if m.Ingredient == nil {
+		return "", errors.New("an IngredientAdd is " +
+			"needed in the Ingredient field of the Meat")
+	}
+	s, err := m.Ingredient.AddIngredient()
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s %s,", s, "meat"), nil
+}
+
+type Onion struct {
+	Ingredient IngredientAdd
+}
+
+func (o *Onion) AddIngredient() (string, error) {
+	if o.Ingredient == nil {
+		return "", errors.New("an IngredientAdd is" +
+			" needed in the Ingredient field of the Onion")
+	}
+	s, err := o.Ingredient.AddIngredient()
+	if err != nil {
+		return "", nil
+	}
+	return fmt.Sprintf("%s %s,", s, "onion"), nil
+}
+
+```
+
+### Тесты
+```go
+package decorator
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestPizzaDecorator_AddIngredient(t *testing.T) {
+	pizza := &PizzaDecorator{}
+
+	pizzaResult, _ := pizza.AddIngredient()
+	expectedText := "Pizza with the following ingredients:"
+	if !strings.Contains(pizzaResult, expectedText) {
+		t.Errorf("when calling the add ingredient of the pizza"+
+			" decorator it must return the text '%s'the expected text, not '%s'",
+			pizzaResult, expectedText)
+	}
+}
+
+func TestOnion_AddIngredient(t *testing.T) {
+	onion := &Onion{}
+	onionResult, err := onion.AddIngredient()
+	if err == nil {
+		t.Errorf(
+			"when calling AddIngredient on the onion decorator without an IngredientAdd "+
+				"on its Ingredient field must return an error, not a string with '%s'",
+			onionResult,
+		)
+	}
+	onion = &Onion{&PizzaDecorator{}}
+	onionResult, err = onion.AddIngredient()
+	if err != nil {
+		t.Errorf("when calling the add ingredient of the onion decorator it must "+
+			"return a text with word 'onion', not '%s'", onionResult)
+	}
+}
+
+func TestMeat_AddIngredient(t *testing.T) {
+	meat := &Meat{}
+	meatResult, err := meat.AddIngredient()
+	if err == nil {
+		t.Errorf(
+			"when calling AddIngredient on the meat decorator without an IngredientAdd"+
+				" on its Ingredient field must return an error, not a string with '%s'",
+			meatResult,
+		)
+	}
+	meat = &Meat{&PizzaDecorator{}}
+	meatResult, err = meat.AddIngredient()
+	if err != nil {
+		t.Errorf("when calling the add ingredient of the meat decorator it must return "+
+			"a text with word 'meat', not '%s'", meatResult)
+	}
+}
+
+func TestPizzaDecorator_FullStack(t *testing.T) {
+	pizza := &Onion{&Meat{&PizzaDecorator{}}}
+	pizzaResult, err := pizza.AddIngredient()
+	if err != nil {
+		t.Error(err)
+	}
+
+	expectedText := "Pizza with the following ingredients: meat, onion"
+	if !strings.Contains(pizzaResult, expectedText) {
+		t.Errorf("when asking for a pizza with onion and meat the returned string must"+
+			" contain the text '%s' but '%s' didn't have it", expectedText, pizzaResult)
+	}
+	t .Log(pizzaResult)
+}
+
+```
 </details>
 
 <details><summary> Facade</summary>
@@ -1182,10 +1515,6 @@ func TestPacktPrinter_Print(t *testing.T) {
 </details>
 
 <details><summary> Flyweight</summary>
-в процессе ...
-</details>
-
-<details><summary> Decorator</summary>
 в процессе ...
 </details>
 
@@ -1233,12 +1562,414 @@ func TestPacktPrinter_Print(t *testing.T) {
 
 ********************************************
 #### Конкурентные (Concurrency)
+<details><summary> Concurrent Singleton</summary>
+
+### Concurrent Singleton — используя мьютексы и каналы
+
+### Описание
+
+В Creational паттернах есть паттерн Singleton — это некая структура или переменная, которая существует в коде только один раз. Весь доступ к этой структуре должен осуществляться с использованием описанного паттерна, но на самом деле он не безопасен с параллельной точки зрения.
+Concurrent Singleton будет описан с учетом параллелизма.
+
+### Пример — уникальный счетчик с помощью каналов и мьютексов
+Чтобы ограничить одновременный доступ к экземпляру Singleton, только одна горутина сможет получить к нему доступ. Мы получим доступ к нему, используя каналы — первый для добавления единицы в счетчик, второй для получения текущего счетчика и третий для остановки горутины.
+Мы добавим единицу в счетчик 10 000 раз, используя 10 000 различных горутин, запущенных из двух разных экземпляров Singleton. Затем мы введем цикл для проверки количества Singleton до тех пор, пока оно не станет равным 5000, и напишем значение счетчика перед запуском цикла.
+Как только счетчик достигнет 5000, цикл завершится и закроет запущенную горутину.
+
+### Реализация с помощью каналов
+
+```go
+package concurrentSingleton
+
+import "sync"
+
+var addCh chan bool = make(chan bool)
+var getCountCh chan chan int = make(chan chan int)
+var quitCh chan bool = make(chan bool)
+
+func init() {
+	var count int
+
+	go func(addCh <-chan bool, getCountCh <-chan chan int, quitCh <-chan bool) {
+		for {
+			select {
+			case <-addCh:
+				count++
+			case ch := <-getCountCh:
+				ch <- count
+			case <-quitCh:
+				return
+			}
+		}
+	}(addCh, getCountCh, quitCh)
+}
+
+type singleton struct{}
+
+var instance singleton
+
+func GetInstance() *singleton {
+	return &instance
+}
+
+func (s *singleton) AddOne() {
+	addCh <- true
+}
+
+func (s *singleton) GetCount() int {
+	resCh := make(chan int)
+	defer close(resCh)
+	getCountCh <- resCh
+	return <-resCh
+}
+
+func (s *singleton) Stop() {
+	quitCh <- true
+	close(addCh)
+	close(getCountCh)
+	close(quitCh)
+}
+```
+
+### Реализация с помощью мьютексов
+```go
+type singleton2 struct {
+	count int
+	sync.RWMutex
+}
+
+var instance2 singleton2
+
+func GetInstance2() *singleton2 {
+	return &instance2
+}
+func (s *singleton2) AddOne() {
+	s.Lock()
+	defer s.Unlock()
+	s.count++
+}
+func (s *singleton2) GetCount() int {
+	s.RLock()
+	defer s.RUnlock()
+	return s.count
+}
+```
+
+### Тесты
+```go
+package concurrentSingleton
+
+import (
+	"fmt"
+	"testing"
+	"time"
+)
+
+func TestStartInstance(t *testing.T) {
+	singleton := GetInstance()
+	singleton2 := GetInstance()
+
+	n := 5000
+
+	for i := 0; i < n; i++ {
+		go singleton.AddOne()
+		go singleton2.AddOne()
+	}
+
+	fmt.Printf("Before loop, current count is %d\n", singleton.GetCount())
+
+	var val int
+	for val != n*2 {
+		val = singleton.GetCount()
+		time.Sleep(10 * time.Millisecond)
+	}
+	singleton.Stop()
+}
+
+func TestStartInstanceMutex(t *testing.T) {
+	singleton := GetInstance2()
+	singleton2 := GetInstance2()
+
+	n := 5000
+
+	for i := 0; i < n; i++ {
+		go singleton.AddOne()
+		go singleton2.AddOne()
+	}
+
+	fmt.Printf("Before loop, current count is %d\n", singleton.GetCount())
+
+	var val int
+	for val != n*2 {
+		val = singleton.GetCount()
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+```
+</details>
+
 <details><summary> Barrier</summary>
-в процессе ...
+
+### Barrier — ожидание всех горутин и вывод одного общего результата
+
+### Описание
+
+Представьте ситуацию, когда у нас есть приложение микросервисов, в котором один микросервис должна составить свой ответ путем слияния ответов трех других микросервисов. Здесь и поможет паттерн Barrier.
+Barrier может быть сервисом, который будет блокировать свой ответ до тех пор, пока он не будет составлен из результатов, возвращаемых одной или несколькими различными горутинами (или сервисами).
+Как следует из названия, паттерн Barrier пытается остановить выполнение, чтобы оно не завершилось до тех пор, пока все нужные результаты не будут готовы.
+
+### Пример — HTTP GET aggregator
+
+Для примера мы собираемся написать очень типичную ситуацию в приложении микросервисов — приложении, выполняющего два вызова HTTP GET и объединяющего их в один ответ, который будет напечатан на консоли.
+Наше небольшое приложение должно выполнять каждый запрос в горутине и выводить результат на консоль, если оба ответа верны. Если какой-либо из них возвращает ошибку, мы печатаем только ошибку.
+
+Требования и критерии приемлемости:
+* Выведите на консоль объединенный результат двух вызовов URL-адресов `http://httpbin.org/headers` и `http://httpbin.org/User-Agent`. Это пара общедоступных конечных точек, которые отвечают данными о входящих соединениях
+* Если какой-либо из вызовов терпит неудачу, он не должен печатать никакого результата — только сообщение об ошибке (или сообщения об ошибках, если оба вызова не удались)
+* Вывод должен быть напечатан как составной результат после завершения обоих вызовов. Это означает, что мы не можем вывести результат одного вызова, а затем другого
+
+### Реализация
+```go
+package barrier
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+)
+
+var timeoutMilliseconds int = 5000
+
+type barrierResp struct {
+	Err  error
+	Resp string
+}
+
+func barrier(endpoints ...string) {
+	requestNumber := len(endpoints)
+
+	in := make(chan barrierResp, requestNumber)
+	defer close(in)
+
+	responses := make([]barrierResp, requestNumber)
+
+	for _, endpoint := range endpoints {
+		go makeRequest(in, endpoint)
+	}
+
+	var hasError bool
+	for i := 0; i < requestNumber; i++ {
+		resp := <-in
+		if resp.Err != nil {
+			fmt.Println("ERROR: ", resp.Err)
+			hasError = true
+		}
+		responses[i] = resp
+	}
+
+	if !hasError {
+		for _, resp := range responses {
+			fmt.Println(resp.Resp)
+		}
+	}
+}
+
+func makeRequest(out chan<- barrierResp, url string) {
+	res := barrierResp{}
+	client := http.Client{
+		Timeout: time.Duration(time.Duration(timeoutMilliseconds) * time.Millisecond),
+	}
+
+	resp, err := client.Get(url)
+	if err != nil {
+		res.Err = err
+		out <- res
+		return
+	}
+
+	byt, err := io.ReadAll(resp.Body)
+	if err != nil {
+		res.Err = err
+		out <- res
+		return
+	}
+
+	res.Resp = string(byt)
+	out <- res
+}
+
+```
+
+### Тесты
+
+```go
+package barrier
+
+import (
+	"bytes"
+	"io"
+	"os"
+	"strings"
+	"testing"
+)
+
+func TestBarrier(t *testing.T) {
+	t.Run("Correct endpoints", func(t *testing.T) {
+		endpoints := []string{"http://httpbin.org/headers", "http://httpbin.org/User-Agent"}
+
+		result := captureBarrierOutput(endpoints...)
+		if !strings.Contains(result, "Accept-Encoding") || strings.Contains(result, "User-Agent") {
+			t.Fail()
+		}
+		t.Log(result)
+	})
+
+	t.Run("One endpoint incorrect", func(t *testing.T) {
+		endpoints := []string{"http://malformed-url", "http://httpbin.org/User-Agent"}
+
+		result := captureBarrierOutput(endpoints...)
+		if !strings.Contains(result, "ERROR") {
+			t.Fail()
+		}
+		t.Log(result)
+	})
+
+	t.Run("Very short timeout", func(t *testing.T) {
+		endpoints := []string{"http://httpbin.org/headers", "http://httpbin.org/User-Agent"}
+
+		timeoutMilliseconds = 1
+		result := captureBarrierOutput(endpoints...)
+		if !strings.Contains(result, "Timeout") {
+			t.Fail()
+		}
+		t.Log(result)
+	})
+}
+
+func captureBarrierOutput(endpoints ...string) string {
+	reader, writer, _ := os.Pipe()
+
+	os.Stdout = writer
+	out := make(chan string)
+	go func() {
+		var buf bytes.Buffer
+		io.Copy(&buf, reader)
+		out <- buf.String()
+	}()
+
+	barrier(endpoints...)
+
+	writer.Close()
+	temp := <-out
+	return temp
+}
+
+```
 </details>
 
 <details><summary> Future</summary>
-в процессе ...
+
+### Future — реализация принципа 'fire-and-forget'
+
+### Описание
+
+Паттерн проектирования Future (также называемый Promise) — это быстрый и простой способ создания конкурентных структур для асинхронного программирования. Идея здесь состоит в том, чтобы реализовать принцип «fire-and-forget», который обрабатывает все возможные результаты действия.
+Короче говоря, мы определим каждое возможное поведение действия перед его выполнением в разных горутинах. Здесь интересно то, что мы можем запустить новый Future внутри Future и встроить столько Future, сколько захотим, в одну и ту же горутину (или в новые).
+
+С помощью паттерна Future мы можем запускать множество новых горутин, каждая из которых имеет действие и собственный обработчик. Это позволяет нам сделать следующее:
+* Делегировать обработчик действий другой горутине
+* Стекировать между собой множество асинхронных вызовов (асинхронный вызов, который в своих результатах вызывает другой асинхронный вызов)
+
+### Пример — простой асинхронный requester
+В этом примере у нас будет метод, который возвращает строку или ошибку, но мы хотим выполнить все конкурентно. Используя канал, мы можем запустить новую горутину и обработать входящий результат из канала.
+Но в этом случае нам придется обрабатывать результат (строку или ошибку), а этого мы не хотим. Вместо этого мы определим, что делать в случае успеха и что делать в случае ошибки.
+
+Требования и критерии приемлемости:
+* Делегировать выполнение функции другой горутине
+* Функция вернет string (maybe) или error
+* Обработчики должны быть уже определены до выполнения функции
+* Дизайн должен быть многоразовым
+
+### Реализация
+```go
+package Future
+
+type SuccessFunc func(string)
+type FailFunc func(error)
+type ExecuteStringFunc func() (string, error)
+
+type MaybeString struct {
+	successFunc SuccessFunc
+	failFunc    FailFunc
+}
+
+func (s *MaybeString) Success(f SuccessFunc) *MaybeString {
+	s.successFunc = f
+	return s
+}
+
+func (s *MaybeString) Fail(f FailFunc) *MaybeString {
+	s.failFunc = f
+	return s
+}
+
+func (s *MaybeString) Execute(f ExecuteStringFunc) {
+	go func(s *MaybeString) {
+		str, err := f()
+		if err != nil {
+			s.failFunc(err)
+		} else {
+			s.successFunc(str)
+		}
+	}(s)
+}
+```
+
+### Тесты
+```go
+package Future
+
+import (
+	"errors"
+	"sync"
+	"testing"
+)
+
+func TestStringOrError(t *testing.T) {
+	future := &MaybeString{}
+	t.Run("Success result", func(t *testing.T) {
+		var wg sync.WaitGroup
+		wg.Add(1)
+		future.Success(func(s string) {
+			t.Log(s)
+			wg.Done()
+		}).Fail(func(e error) {
+			t.Fail()
+			wg.Done()
+		})
+		future.Execute(func() (string, error) {
+			return "Hello World!", nil
+		})
+		wg.Wait()
+	})
+	t.Run("Error result", func(t *testing.T) {
+		var wg sync.WaitGroup
+		wg.Add(1)
+		future.Success(func(s string) {
+			t.Fail()
+			wg.Done()
+		}).Fail(func(e error) {
+			t.Log(e.Error())
+			wg.Done()
+		})
+		future.Execute(func() (string, error) {
+			return "", errors.New("error occurred")
+		})
+		wg.Wait()
+	})
+}
+```
 </details>
 
 <details><summary> Pipeline</summary>
