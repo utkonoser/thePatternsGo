@@ -1,4 +1,4 @@
-package Future
+package future
 
 import (
 	"errors"

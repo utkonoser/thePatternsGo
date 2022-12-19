@@ -1,4 +1,4 @@
-package Future
+package future
 
 type SuccessFunc func(string)
 type FailFunc func(error)

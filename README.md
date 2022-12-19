@@ -1973,11 +1973,311 @@ func TestStringOrError(t *testing.T) {
 </details>
 
 <details><summary> Pipeline</summary>
-в процессе ...
+
+### Pipeline — конвейер передачи данных
+
+### Описание
+
+Pipeline — это паттерн, предназначенный для соединения горутин
+и каналов, так что выходные данные одной горутины становятся входными данными для другой горутины, а для передачи данных используются каналы.
+Одним из преимуществ использования конвейеров является наличие постоянного потока данных, так что никакие горутины и каналы не должны ожидать, пока завершится все остальное, чтобы можно было начать выполнение. Кроме того, мы используем меньше переменных и, следовательно, меньше памяти, потому что не приходится сохранять все данные в виде переменных. Наконец, использование конвейеров упрощает разработку программ и делает их удобнее для поддержки.
+
+Возможности паттерна Pipeline:
+* Можно создать параллельную структуру многошагового алгоритма
+* Можно использовать параллелизм многоядерных машин, разложив алгоритм на разные горутины
+
+### Пример — конвейер математических операций
+
+Мы собираемся сгенерировать список чисел, начиная с 1 и заканчивая некоторым произвольным числом N. Затем мы возьмем каждое число, возведем его в степень 2 и суммируем полученные числа с уникальным результатом. Итак, если `N = 3`, наш список будет `[1,2,3]`. После включения их в 2 наш список становится `[1,4,9]`. Если мы суммируем полученный список, результирующее значение равно 14.
+
+План реализации:
+* Нужно создать список от 1 до N, где N может быть любым целым числом
+* Взять каждое число из этого сгенерированного списка и возвести его в степень 2
+* Суммировать каждое полученное число в окончательный результат и вернуть его
+
+### Реализация
+```go
+package pipeline
+
+func LaunchPipeline(amount int) int {
+	firstCh := generator(amount)
+	secondCh := power(firstCh)
+	thirdCh := sum(secondCh)
+	result := <-thirdCh
+	return result
+}
+
+// LaunchPipeline function doesn't need to allocate every channel, and can be rewritten like this:
+
+func LaunchPipelineSecondVar(amount int) int {
+	return <-sum(power(generator(amount)))
+}
+func generator(max int) <-chan int {
+	outChInt := make(chan int, 100)
+
+	go func() {
+		for i := 1; i <= max; i++ {
+			outChInt <- i
+		}
+		close(outChInt)
+	}()
+	return outChInt
+}
+
+func power(in <-chan int) <-chan int {
+	out := make(chan int, 100)
+	go func() {
+		for v := range in {
+			out <- v * v
+		}
+		close(out)
+	}()
+	return out
+}
+
+func sum(in <-chan int) <-chan int {
+	out := make(chan int, 100)
+	go func() {
+		var sum int
+		for v := range in {
+			sum += v
+		}
+		out <- sum
+		close(out)
+	}()
+	return out
+}
+
+```
+### Тесты
+```go
+package pipeline
+
+import "testing"
+
+func TestLaunchPipeline(t *testing.T) {
+	tableTest := [][]int{
+		{3, 14},
+		{5, 55},
+	}
+
+	var res int
+	for _, test := range tableTest {
+		res = LaunchPipeline(test[0])
+		if res != test[1] {
+			t.Fatal()
+		}
+		t.Logf("%d == %d\n", res, test[1])
+	}
+}
+
+func TestLaunchPipelineSecondVar(t *testing.T) {
+	tableTest := [][]int{
+		{3, 14},
+		{5, 55},
+	}
+
+	var res int
+	for _, test := range tableTest {
+		res = LaunchPipelineSecondVar(test[0])
+		if res != test[1] {
+			t.Fatal()
+		}
+		t.Logf("%d == %d\n", res, test[1])
+	}
+}
+
+```
 </details>
 
 <details><summary> Workers Pool</summary>
-в процессе ...
+
+### Workers pool — пул обработчиков
+
+### Описание
+
+Workers pool — это множество потоков, предназначенных для обработки назначаемых им заданий. Веб-сервер Apache и Go-пакет net/http работают приблизительно так: основной процесс принимает все входящие запросы, которые затем перенаправляются рабочим процессам для обработки. Как только рабочий процесс завершает свою работу, он готов к обслуживанию нового клиента.
+Однако здесь есть главное различие: пул обработчиков использует не потоки,
+а горутины. Кроме того, потоки обычно не умирают после обработки запросов, потому что затраты на завершение потока и создание нового слишком высоки, тогда как горутина прекращает существовать после завершения работы. Пулы обработчиков в Go реализованы с помощью буферизованных каналов, поскольку они позволяют ограничить число одновременно выполняемых горутин.
+
+Создание Workers pool связано с управлением ресурсами: ЦП, ОЗУ, временем, соединениями и так далее. Паттерн проектирования Workers pool помогает сделать следующее:
+* Контролировать доступ к общим ресурсам
+* Создавать ограниченное количество горутин для каждого приложения
+* Обеспечить больше возможностей параллелизма для других конкурентных структур
+
+### Пример — pool of pipelines
+В примере мы запустим ограниченное количество Pipeline, чтобы планировщик Go мог попытаться обрабатывать запросы параллельно.
+Идея здесь состоит в том, чтобы контролировать количество горутин, изящно останавливать их, когда приложение завершает работу, и максимизировать параллелизм. В примере мы будем передавать строки, к которым будем добавлять данные и префиксы.
+
+### Реализация
+```go
+package workersPool
+
+import (
+	"fmt"
+	"log"
+	"strings"
+	"sync"
+	"time"
+)
+
+// workers pipeline
+
+type Request struct {
+	Data    any
+	Handler RequestHandler
+}
+
+type RequestHandler func(any)
+
+func NewStringRequest(data string, wg *sync.WaitGroup) Request {
+	myRequest := Request{
+		Data: data, Handler: func(i interface{}) {
+			defer wg.Done()
+			s, ok := i.(string)
+			if !ok {
+				log.Fatal("Invalid casting to string")
+			}
+			fmt.Println(s)
+		},
+	}
+	return myRequest
+}
+
+// worker
+
+type WorkerLauncher interface {
+	LaunchWorker(in chan Request)
+}
+
+type PrefixSuffixWorker struct {
+	id      int
+	prefixS string
+	suffixS string
+}
+
+func (w *PrefixSuffixWorker) LaunchWorker(in chan Request) {
+	w.prefix(w.append(w.uppercase(in)))
+}
+
+func (w *PrefixSuffixWorker) uppercase(in <-chan Request) <-chan Request {
+	out := make(chan Request)
+
+	go func() {
+		for msg := range in {
+			s, ok := msg.Data.(string)
+			if !ok {
+				msg.Handler(nil)
+				continue
+			}
+			msg.Data = strings.ToUpper(s)
+			out <- msg
+		}
+		close(out)
+	}()
+	return out
+}
+
+func (w *PrefixSuffixWorker) append(in <-chan Request) <-chan Request {
+	out := make(chan Request)
+
+	go func() {
+		for msg := range in {
+			uppercaseString, ok := msg.Data.(string)
+			if !ok {
+				msg.Handler(nil)
+				continue
+			}
+			msg.Data = fmt.Sprintf("%s%s", uppercaseString, w.suffixS)
+			out <- msg
+		}
+		close(out)
+	}()
+	return out
+}
+
+func (w *PrefixSuffixWorker) prefix(in <-chan Request) {
+	go func() {
+		for msg := range in {
+			uppercaseStringWithSuffix, ok := msg.Data.(string)
+			if !ok {
+				msg.Handler(nil)
+				continue
+			}
+			msg.Handler(fmt.Sprintf("%s%s", w.prefixS, uppercaseStringWithSuffix))
+		}
+	}()
+}
+
+// dispatcher
+
+type Dispatcher interface {
+	LaunchWorker(w WorkerLauncher)
+	MakeRequest(r Request)
+	Stop()
+}
+
+type dispatcher struct {
+	inCh chan Request
+}
+
+func (d *dispatcher) LaunchWorker(w WorkerLauncher) {
+	w.LaunchWorker(d.inCh)
+}
+
+func (d *dispatcher) Stop() {
+	close(d.inCh)
+}
+
+func (d *dispatcher) MakeRequest(r Request) {
+	select {
+	case d.inCh <- r:
+	case <-time.After(time.Second * 5):
+		return
+	}
+}
+
+func NewDispatcher(b int) Dispatcher {
+	return &dispatcher{inCh: make(chan Request, b)}
+}
+```
+
+### Тесты
+```go
+package workersPool
+
+import (
+	"fmt"
+	"sync"
+	"testing"
+)
+
+func TestWorkersPool(t *testing.T) {
+	bufferSize := 100
+	dispatcher := NewDispatcher(bufferSize)
+	workers := 3
+	for i := 1; i <= workers; i++ {
+		var w WorkerLauncher = &PrefixSuffixWorker{
+			id:      i,
+			prefixS: fmt.Sprintf("Worker id: %d -> ", i),
+			suffixS: " World",
+		}
+		dispatcher.LaunchWorker(w)
+	}
+	requests := 10
+	var wg sync.WaitGroup
+	wg.Add(requests)
+
+	for i := 0; i < requests; i++ {
+		req := NewStringRequest(fmt.Sprintf("(Msg_id: %d) -> Hello", i), &wg)
+		dispatcher.MakeRequest(req)
+	}
+	dispatcher.Stop()
+	wg.Wait()
+}
+
+```
+
 </details>
 
 <details><summary> Publish/Subscriber</summary>
