@@ -1845,15 +1845,392 @@ func Test_HighVolume(t *testing.T) {
 ********************************************
 #### Поведенческие (Behavioral)
 <details><summary> Strategy</summary>
-в процессе ...
+
+### Strategy — способ инкапсулировать алгоритмы в различные структуры
+
+### Описание
+
+Паттерн Strategy, вероятно, самый простой для понимания из поведенческих паттернов.
+Паттерн Strategy использует различные алгоритмы для достижения определенных функций. Эти алгоритмы скрыты за интерфейсом и, естественно, они должны быть взаимозаменяемы. Все алгоритмы достигают одной и той же функциональности по-разному.
+
+Цели паттерна Strategy:
+* Предоставить несколько алгоритмов для достижения определенной функциональности
+* Все типы достигают одной и той же функциональности по-разному, но сам клиент Strategy не затрагивается
+
+### Пример — сортировка
+В примере у нас будет интерфейс StrategySort и несколько алгоритмов сортировки. При использовании разных алгоритмов сортировки, результат будет одним и тем же.
+### Реализация
+```go
+package strategy
+
+// StrategySort provides an interface for sort algorithms.
+type StrategySort interface {
+	Sort([]int)
+}
+
+// BubbleSort implements bubble sort algorithm.
+type BubbleSort struct {
+}
+
+func (s *BubbleSort) Sort(a []int) {
+	size := len(a)
+	if size < 2 {
+		return
+	}
+	for i := 0; i < size; i++ {
+		for j := size - 1; j >= i+1; j-- {
+			if a[j] < a[j-1] {
+				a[j], a[j-1] = a[j-1], a[j]
+			}
+		}
+	}
+}
+
+// InsertionSort implements insertion sort algorithm.
+type InsertionSort struct {
+}
+
+func (s *InsertionSort) Sort(a []int) {
+	size := len(a)
+	if size < 2 {
+		return
+	}
+	for i := 1; i < size; i++ {
+		var j int
+		var buff = a[i]
+		for j = i - 1; j >= 0; j-- {
+			if a[j] < buff {
+				break
+			}
+			a[j+1] = a[j]
+		}
+		a[j+1] = buff
+	}
+}
+
+// Context provides a context for execution of a strategy.
+type Context struct {
+	strategy StrategySort
+}
+
+// Algorithm replaces strategies.
+func (c *Context) Algorithm(a StrategySort) {
+	c.strategy = a
+}
+
+// Sort sorts data according to the chosen strategy.
+func (c *Context) Sort(s []int) {
+	c.strategy.Sort(s)
+}
+
+```
+### Тесты
+```go
+package strategy
+
+import (
+	"strconv"
+	"testing"
+)
+
+func TestStrategy(t *testing.T) {
+
+	data1 := []int{8, 2, 6, 7, 1, 3, 9, 5, 4}
+	data2 := []int{8, 2, 6, 7, 1, 3, 9, 5, 4}
+
+	ctx := new(Context)
+
+	ctx.Algorithm(&BubbleSort{})
+
+	ctx.Sort(data1)
+
+	ctx.Algorithm(&InsertionSort{})
+
+	ctx.Sort(data2)
+
+	expect := "1,2,3,4,5,6,7,8,9,"
+
+	var result1 string
+	for _, val := range data1 {
+		result1 += strconv.Itoa(val) + ","
+	}
+
+	if result1 != expect {
+		t.Errorf("Expect result1 to equal %s, but %s.\n", expect, result1)
+	}
+
+	var result2 string
+	for _, val := range data2 {
+		result2 += strconv.Itoa(val) + ","
+	}
+
+	if result2 != expect {
+		t.Errorf("Expect result2 to equal %s, but %s.\n", expect, result2)
+	}
+}
+
+```
 </details>
 
 <details><summary> Chain of Responsibility</summary>
-в процессе ...
+
+### Chain of responsibility — цепочка ответственности
+
+### Описание
+
+Как следует из названия, паттерн состоит из цепочки, и в нашем случае каждое звено этой цепочки подчиняется принципу единственной ответственности.
+Принцип единственной ответственности подразумевает, что тип, функция, метод или любая подобная абстракция должны иметь только одну единственную ответственность. Таким образом, мы можем применять множество функций, каждая из которых выполняет одну конкретную задачу к некоторой структуре, срезу, мапе и так далее.
+Один из очевидных примеров данного паттерна — это logging chain (цепочка логов).
+
+Цепочка логов — это набор типов, которые регистрируют выходные данные некоторой программы более чем в одном интерфейсе `io.Writer`. Возможны логгеры, которые выводят логи на консоль, либо в файл, либо на удаленный сервер. Можно делать три вызова каждый раз, когда нужно записать все логи, но более элегантно сделать только один вызов и спровоцировать цепную реакцию. Но также мы могли бы иметь цепочку проверок и в случае сбоя одной из них разорвать цепочку и что-то вернуть. Это работа промежуточного программного обеспечения аутентификации и авторизации.
+
+### Пример — multi-logger chain
+
+Мы собираемся разработать решение с несколькими логгерами, которое мы можем связать так, как мы хотим. Мы будем использовать два разных консольных логгера и один логгер общего назначения.
+
+Критерии приемлемости:
+* Нужен простой логгер, который логирует текст запроса с префиксом `First logger` и передает его следующему звену в цепочке
+* Второй логгер напишет на консоль, если во входящем тексте есть слово `hello`, и передаст запрос третьему логгеру. Но, если нет, то цепочка порвется
+* Третий тип логгера общего назначения под названием `WriterLogger`, который использует для записи интерфейс `io.Writer`
+* Конкретная реализация `WriterLogger` записывает в файл и представляет собой третье звено в цепочке
+
+### Реализация
+
+```go
+package chainOfResponsibility
+
+import (
+	"fmt"
+	"io"
+	"strings"
+)
+
+type ChainLogger interface {
+	Next(string)
+}
+
+type FirstLogger struct {
+	NextChain ChainLogger
+}
+
+func (f *FirstLogger) Next(s string) {
+	fmt.Printf("First Logger: %s\n", s)
+	if f.NextChain != nil {
+		f.NextChain.Next(s)
+	}
+}
+
+type SecondLogger struct {
+	NextChain ChainLogger
+}
+
+func (f *SecondLogger) Next(s string) {
+	if strings.Contains(strings.ToLower(s), "hello") {
+		fmt.Printf("Second Logger: %s", s)
+
+		if f.NextChain != nil {
+			f.NextChain.Next(s)
+		}
+		return
+	}
+	fmt.Printf("Finishing in second logging\n\n")
+
+}
+
+type WriterLogger struct {
+	NextChain ChainLogger
+	Writer    io.Writer
+}
+
+func (w *WriterLogger) Next(s string) {
+	if w.Writer != nil {
+		w.Writer.Write([]byte("Writer Logger: " + s))
+	}
+
+	if w.NextChain != nil {
+		w.NextChain.Next(s)
+	}
+}
+
+
+```
+
+### Тесты
+
+```go
+package chainOfResponsibility
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
+
+type myTestWriter struct {
+	receivedMessage *string
+}
+
+func (m *myTestWriter) Write(p []byte) (int, error) {
+	if m.receivedMessage == nil {
+		m.receivedMessage = new(string)
+	}
+	tempMessage := fmt.Sprintf("%s%s", *m.receivedMessage, p)
+	m.receivedMessage = &tempMessage
+	return len(p), nil
+}
+
+func (m *myTestWriter) Next(s string) {
+	m.Write([]byte(s))
+}
+
+func TestCreateDefaultChain(t *testing.T) {
+	myWriter := myTestWriter{}
+
+	writerLogger := WriterLogger{Writer: &myWriter}
+	second := SecondLogger{NextChain: &writerLogger}
+	chain := FirstLogger{NextChain: &second}
+
+	t.Run("3 loggers, 2 of them writes to console, second only if it founds "+
+		"the word 'hello', third writes to some variable if second found 'hello'",
+		func(t *testing.T) {
+			chain.Next("message that breaks the chain\n")
+
+			if myWriter.receivedMessage != nil {
+				t.Fatal("last link should not receive any message")
+			}
+
+			chain.Next("Hello\n")
+
+			if myWriter.receivedMessage == nil ||
+				!strings.Contains(*myWriter.receivedMessage, "Hello") {
+				t.Fatal("last link didn't received expected message")
+			}
+		})
+}
+
+```
+
+
 </details>
 
 <details><summary> Command</summary>
-в процессе ...
+
+### Command — крошечный паттерн проектирования, но очень полезный
+
+### Описание
+
+Паттерн проектирования Command очень похож паттерн Strategy, но с ключевыми отличиями. В то время как в Strategy мы фокусируемся на изменении алгоритмов, в Command мы фокусируемся на вызове чего-либо или на абстракции некоторого типа.
+Command обычно рассматривается как контейнер. Вы помещаете что-то вроде информации для взаимодействия с пользователем в пользовательский интерфейс.
+При использовании Command мы пытаемся инкапсулировать какое-то действие или информацию, которые должны быть обработаны где-то еще. Это похоже на паттерн Strategy, но на самом деле Command может инициировать предварительно сконфигурированную Strategy в другом месте, так что это не одно и то же. Ниже приведены цели этого шаблона проектирования:
+* Можно поместить некоторую информацию в коробку, а там, где необходимо, получатель откроет коробку и узнает ее содержимое
+* Можно делегировать некоторые действия кому-то другому
+
+### Пример — simple queue
+Необходимо поместить некоторую информацию в реализацию интерфейса Command, в итоге получится очередь. Мы создадим множество экземпляров типа, реализующего паттерн Command, и передадим их в очередь, в которой будут храниться команды до тех пор, пока в очереди не окажется три из них, после чего они будут обработаны.
+
+Критерии приемлемости:
+* Нам нужен конструктор консольных команд печати. При использовании этого конструктора со строкой он вернет команду, которая ее напечатает
+* Нам нужна структура данных, которая хранит входящие команды в очереди и печатает их, когда длина очереди достигает трех
+### Реализация
+
+```go
+type Command interface {
+    Execute()
+}
+
+type ConsoleOutput struct {
+    message string
+}
+
+func (c *ConsoleOutput) Execute() {
+    fmt.Println(c.message)
+}
+
+func CreateCommand(s string) Command {
+    fmt.Println("Creating command")
+    return &ConsoleOutput{message: s}
+}
+
+type CommandQueue struct {
+    queue []Command
+}
+
+func (p *CommandQueue) AddCommand(c Command) {
+    p.queue = append(p.queue, c)
+
+    if len(p.queue) == 3 {
+        for _, command := range p.queue {
+            command.Execute()
+        }
+        p.queue = make([]Command, 0)
+    }
+}
+```
+
+### Еще один пример
+В предыдущем примере показано, как использовать обработчик команд, который выполняет содержимое команды. Но распространенный способ использования паттерна Command — это делегирование информации вместо выполнения другому объекту.
+
+### Реализация
+
+```go
+type AnotherCommand interface {
+	Info() string
+}
+
+type TimePassed struct {
+	start time.Time
+}
+
+func (t *TimePassed) Info() string {
+	return time.Since(t.start).String()
+}
+
+type HelloMsg struct{}
+
+func (h HelloMsg) Info() string {
+	return "Hello World!"
+}
+```
+
+### Тесты
+
+```go
+package command
+
+import (
+	"fmt"
+	"testing"
+	"time"
+)
+
+func TestCommandQueue(t *testing.T) {
+	queue := CommandQueue{}
+	queue.AddCommand(CreateCommand("First message"))
+	queue.AddCommand(CreateCommand("Second message"))
+	queue.AddCommand(CreateCommand("Third message"))
+	if len(queue.queue) != 0 {
+		t.Errorf("wrong length %v must be 0", len(queue.queue))
+	}
+	queue.AddCommand(CreateCommand("Fourth message"))
+	queue.AddCommand(CreateCommand("Fifth message"))
+}
+
+func TestAnotherCommand(t *testing.T) {
+	var timeCommand AnotherCommand
+	timeCommand = &TimePassed{start: time.Now()}
+
+	var helloCommand AnotherCommand
+	helloCommand = &HelloMsg{}
+
+	time.Sleep(time.Second)
+
+	fmt.Println(timeCommand.Info())
+	fmt.Println(helloCommand.Info())
+}
+
+```
+
+
 </details>
 
 <details><summary> Template</summary>
